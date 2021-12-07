@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Mandelbrot set with WebGL</title>
+    <style>
+        body {
+            font-size: 1.5em;
+            text-align: center;
+        }
+    </style>
+    <script src="dat.gui.min.js"></script>
+    <script id="shader-vertex" type="x-shader/x-vertex">
+        attribute vec4 a_position;
+        attribute vec2 a_texcoord;
+        varying vec2 v_texCoords;
+        uniform float uniformCx;
+        uniform float uniformCy;
+        uniform float uniformZoom;
+
+        void main() {
+            gl_Position = a_position;
+            v_texCoords = (a_texcoord / uniformZoom) + vec2(uniformCx, uniformCy);
+        }
+    </script>
+    <script id="shader-fragment" type="x-shader/x-fragment">
+        precision mediump float;
+        varying vec2 v_texCoords;
+
+        // Mandelbrot Escape time algorithm:
+        // https://en.wikipedia.org/wiki/Plotting_algorithms_for_the_Mandelbrot_set
+        void mandelbrotEscapeTimeAlgorithm(in float x0, in float y0, out float escapeTime) {
+            float x = 0.0;
+            float y = 0.0;
+            float x2 = 0.0;
+            float y2 = 0.0;
+            escapeTime = 0.0;
+            for (int i = 0; i < 1000; i++) {
+                if ((x2 + y2) > 4.0) {
+                    break;
+                }
+                y = 2.0 * x * y + y0;
+                x = x2 - y2 + x0;
+                x2 = x * x;
+                y2 = y * y;
+                escapeTime = escapeTime + 1.0;
+            }
+        }
+
+        void main() {
+            float escapeTime = 0.0;
+            mandelbrotEscapeTimeAlgorithm(v_texCoords.x, v_texCoords.y, escapeTime);
+            float color = log(escapeTime) / log(1000.0);
+            gl_FragColor = vec4(color, color, color, 1.0);
+        }
+    </script>
+    <script>
+        "use strict";
+
+        let  gl;
+        let attributeCoords;
+        let bufferCoords;
+        let attributeTexCoords;
+        let bufferTexCoords;
+        let uniformCx;
+        let uniformCy;
+        let uniformZoom;
+        let canvas;
+        let app_config = {cx: -0.761574, cy: -0.0847596, zoom: 0.0, animate:false}
+        let zoom_speed = 0.01;
+        let zoom_max = 20.0;
+        let zoom_min = 0.0;
+        let gui_zoom;
+
+        //Draws a triangle-fan made of two triangle that fills the canvas and add a texture to it
+        function draw() {
+            gl.clearColor(0, 0, 0, 0);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            //Preparing the vertex coordinates
+            let vertexPositions = [
+                -1, -1,
+                1, -1,
+                1, 1,
+                -1, 1
+            ];
+            gl.bindBuffer(gl.ARRAY_BUFFER, bufferCoords);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexPositions), gl.STATIC_DRAW);
+            gl.enableVertexAttribArray(attributeCoords);
+            let size = 2;          // 2 components per iteration
+            let type = gl.FLOAT;   // the data is 32bit floats
+            let normalize = false; // don't normalize the data
+            let stride = 0;        // 0 = move forward size * sizeof(type) each iteration to get the next position
+            let offset = 0;        // start at the beginning of the buffer
+            gl.vertexAttribPointer(attributeCoords, size, type, normalize, stride, offset);
+            //Preparing the texture coordinates
+            let texturePositions = [
+                -1, -1,
+                1, -1,
+                1, 1,
+                -1, 1
+            ];
+            gl.bindBuffer(gl.ARRAY_BUFFER, bufferTexCoords);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(texturePositions), gl.STATIC_DRAW);
+            gl.enableVertexAttribArray(attributeTexCoords);
+            gl.vertexAttribPointer(attributeTexCoords, size, type, normalize, stride, offset);
+            //Drawing the texture
+            let primitiveType = gl.TRIANGLE_FAN;
+            let coordinatesOffset = 0;
+            let coordinatesCount = 4;
+            gl.drawArrays(primitiveType, coordinatesOffset, coordinatesCount);
+        }
+
+        //Compiles a shader
+        function createShader(type, source) {
+            let shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            let success = gl.getShaderParameter(shader, gl.COMPILE_STATUS);
+            if (success) {
+                return shader;
+            } else {
+                throw new Error("Error in " + type.toString() + " shader: " + gl.getShaderInfoLog(shader));
+            }
+        }
+
+        //Creates a program and assign shaders to it
+        function createProgram(gl, vertexShaderSource, fragmentShaderSource) {
+            let vsh = createShader(gl.VERTEX_SHADER, vertexShaderSource)
+            let fsh = createShader(gl.FRAGMENT_SHADER, fragmentShaderSource)
+            let prog = gl.createProgram();
+            gl.attachShader( prog, vsh );
+            gl.attachShader( prog, fsh );
+            gl.linkProgram( prog );
+            let success = gl.getProgramParameter(prog, gl.LINK_STATUS);
+            if (success) {
+                return prog;
+            } else {
+                throw new Error("Link error in program:  " + gl.getProgramInfoLog(prog));
+            }
+        }
+
+        //Initialize WebGL
+        function initGL() {
+            //Tells WebGL how to convert from clip space to pixels
+            gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+            //Gets the shaders sources
+            let vertexShaderSource = document.querySelector("#shader-vertex").text;
+            let fragmentShaderSource = document.querySelector("#shader-fragment").text;
+            //Links the two shaders into a program
+            let program = createProgram(gl, vertexShaderSource, fragmentShaderSource);
+            //Tells it to use our program (which is a pair of shaders)
+            gl.useProgram(program);
+            //Looks up where the vertex data needs to go.
+            attributeCoords = gl.getAttribLocation(program, "a_position");
+            attributeTexCoords = gl.getAttribLocation(program, "a_texcoord");
+            //Looks up uniform variables
+            uniformCx = gl.getUniformLocation(program, "uniformCx");
+            uniformCy = gl.getUniformLocation(program, "uniformCy");
+            uniformZoom = gl.getUniformLocation(program, "uniformZoom");
+            //Prepares buffers
+            bufferCoords = gl.createBuffer();
+            bufferTexCoords = gl.createBuffer();
+        }
+
+        //Creates the user interface (GUI)
+        function create_gui(){
+            const gui = new dat.GUI();
+            gui.add(app_config, "cx");
+            gui.add(app_config, "cy");
+            gui_zoom = gui.add(app_config, "zoom", zoom_min, zoom_max, zoom_speed).onChange(animate);
+            gui.add({redraw: animate}, "redraw");
+            gui.add(app_config, 'animate').onChange(animate);
+        }
+
+        //Initializer for the canvas
+        function init() {
+           canvas = document.getElementById("webglcanvas");
+           canvas.width = 512;
+           canvas.height = 512;
+           let  options = {alpha: false, depth: false};
+                gl = canvas.getContext("webgl", options);
+                initGL();
+                create_gui();
+                animate();
+        }
+
+        //Animates the
+        function animate(){
+            if (app_config.animate){
+                requestAnimationFrame(animate);
+                if (app_config.zoom > zoom_max || app_config.zoom < zoom_min){
+                    zoom_speed *= -1;
+                }
+                app_config.zoom += zoom_speed;
+                gui_zoom.updateDisplay();
+            }
+            gl.uniform1f(uniformZoom, Math.pow(2, app_config.zoom));
+            gl.uniform1f(uniformCx, app_config.cx);
+            gl.uniform1f(uniformCy, app_config.cy);
+            draw();
+        }
+        window.onload = init;
+    </script>
+</head>
+<body>
+<h1>Mandelbrot set drawn with WebGL</h1>
+<canvas id="webglcanvas"></canvas>
+</body>
+</html>
